@@ -63,7 +63,7 @@ fn print_welcome_message(model: &str) {
     println!("Using model: {}", model);
     println!();
     println!("Type your messages and press Enter to chat.");
-    println!("Type 'exit' or 'quit' to end the conversation.");
+    println!("Type 'exit', 'quit', or press Ctrl+D to end the conversation.");
     println!("========================================");
 }
 
@@ -106,8 +106,21 @@ async fn chat_loop(client: Client<OpenAIConfig>, model: &str) -> Result<()> {
         print!("You> ");
         io::stdout().flush()?;
 
-        // Read user input
-        io::stdin().read_line(&mut input)?;
+        // Read user input, handling Ctrl+D (EOF)
+        match io::stdin().read_line(&mut input) {
+            Ok(0) => {
+                // EOF (Ctrl+D) detected
+                println!("\nCtrl+D detected. Exiting...");
+                break;
+            }
+            Ok(_) => {
+                // Normal input
+            }
+            Err(err) => {
+                eprintln!("Error reading input: {}", err);
+                break;
+            }
+        }
 
         // Trim whitespace
         let input = input.trim().to_string();
