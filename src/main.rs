@@ -10,6 +10,27 @@ use async_openai::{
         CreateChatCompletionRequestArgs,
     },
 };
+
+/// Helper function to roughly estimate token count in a conversation
+/// This is a very simple approximation (4 chars ≈ 1 token)
+fn estimate_token_count(messages: &[ChatCompletionRequestMessage]) -> usize {
+    // For simplicity, we'll use a flat approximation
+    // Each message takes about 20 tokens of overhead plus content
+    
+    // Count the total number of messages
+    let message_count = messages.len();
+    
+    // Estimate the total content size by using debug formatting
+    // This avoids complex type handling while getting a reasonable size estimate
+    let content_size = format!("{:?}", messages).len();
+    
+    // Calculate approximate tokens:
+    // - 4 characters per token
+    // - Plus fixed overhead per message
+    let token_estimate = content_size / 4 + message_count * 5;
+    
+    token_estimate
+}
 use dotenv::dotenv;
 use futures::StreamExt;
 use std::{
@@ -83,7 +104,10 @@ fn print_welcome_message(model: &str, word_delay_ms: u64) {
     
     println!();
     println!("Type your messages and press Enter to chat.");
-    println!("Type 'exit', 'quit', or press Ctrl+D to end the conversation.");
+    println!("Commands:");
+    println!("  /exit, /quit - Exit the application");
+    println!("  /history, /status - Show conversation history stats");
+    println!("  Ctrl+D - Exit the application");
     println!("========================================");
 }
 
@@ -153,7 +177,7 @@ async fn chat_loop(
         // Trim whitespace
         let input = input.trim().to_string();
 
-        // Handle exit commands
+        // Handle commands
         if input.eq_ignore_ascii_case("/exit")
             || input.eq_ignore_ascii_case("/quit")
             || input.eq_ignore_ascii_case("exit")
@@ -161,6 +185,24 @@ async fn chat_loop(
         {
             println!("Goodbye! Thanks for chatting.");
             break;
+        } else if input.eq_ignore_ascii_case("/history") || input.eq_ignore_ascii_case("/status") {
+            // Show conversation history summary
+            let user_messages = messages.iter().filter(|m| match m {
+                ChatCompletionRequestMessage::User(_) => true,
+                _ => false
+            }).count();
+            
+            let ai_messages = messages.iter().filter(|m| match m {
+                ChatCompletionRequestMessage::Assistant(_) => true,
+                _ => false
+            }).count();
+            
+            println!("Conversation history:");
+            println!("- Messages: {} total ({} user, {} AI, 1 system)", 
+                     messages.len(), user_messages, ai_messages);
+            println!("- Context window usage: Approximately {} tokens", 
+                     estimate_token_count(&messages));
+            continue;
         }
 
         // Skip empty messages
@@ -188,7 +230,7 @@ async fn chat_loop(
         io::stdout().flush()?;
 
         let mut stream = client.chat().create_stream(request).await?;
-        let mut assistant_response;
+        let assistant_response;
 
         // A completely different approach to avoid duplication:
         // Collect the entire response first, then display it word by word
@@ -278,6 +320,10 @@ async fn chat_loop(
         // Add line break after AI response
         println!();
 
+        // Optional debug line to show conversation history stats
+        // println!("\nSaving response to history: {} chars, {} messages in conversation", 
+        //          assistant_response.len(), messages.len() + 1);
+        
         // Add assistant's response to conversation history
         messages.push(
             ChatCompletionRequestAssistantMessageArgs::default()
