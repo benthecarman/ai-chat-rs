@@ -1,6 +1,17 @@
 use anyhow::{Context, Result};
-use async_openai::{Client, config::OpenAIConfig};
+use async_openai::{
+    Client,
+    config::OpenAIConfig,
+    types::{
+        ChatCompletionRequestMessage,
+        ChatCompletionRequestSystemMessageArgs,
+        ChatCompletionRequestUserMessageArgs,
+        ChatCompletionRequestAssistantMessageArgs,
+        CreateChatCompletionRequestArgs,
+    },
+};
 use dotenv::dotenv;
+use futures::StreamExt;
 use std::{
     env,
     io::{self, Write},
@@ -37,8 +48,8 @@ impl AppConfig {
     fn create_openai_client(&self) -> Client<OpenAIConfig> {
         // Configure the OpenAI client with our settings
         let config = OpenAIConfig::new()
-            .with_api_key(self.openai_api_key.clone())
-            .with_api_base(self.openai_api_base.clone());
+            .with_api_key(&self.openai_api_key)
+            .with_api_base(&self.openai_api_base);
 
         Client::with_config(config)
     }
@@ -67,15 +78,25 @@ async fn main() -> Result<()> {
     // Display welcome message
     print_welcome_message(&config.openai_model);
 
-    // Start interactive chat loop
-    chat_loop().await?;
+    // Start interactive chat loop with the client and model name
+    chat_loop(client, &config.openai_model).await?;
 
     Ok(())
 }
 
 /// Run the interactive chat loop
-async fn chat_loop() -> Result<()> {
+async fn chat_loop(client: Client<OpenAIConfig>, model: &str) -> Result<()> {
     let mut input = String::new();
+    // Store conversation history
+    let mut messages: Vec<ChatCompletionRequestMessage> = Vec::new();
+    
+    // Add a system message to set the assistant's behavior
+    messages.push(
+        ChatCompletionRequestSystemMessageArgs::default()
+            .content("You are a helpful, friendly AI assistant. Be concise and clear in your responses.")
+            .build()?
+            .into()
+    );
 
     loop {
         // Clear the input buffer
@@ -89,7 +110,7 @@ async fn chat_loop() -> Result<()> {
         io::stdin().read_line(&mut input)?;
 
         // Trim whitespace
-        let input = input.trim();
+        let input = input.trim().to_string();
 
         // Handle exit commands
         if input.eq_ignore_ascii_case("/exit")
@@ -106,8 +127,64 @@ async fn chat_loop() -> Result<()> {
             continue;
         }
 
-        // TODO: We'll implement message processing in the next step
-        println!("AI> I received your message: {}", input);
+        // Add user message to history
+        messages.push(
+            ChatCompletionRequestUserMessageArgs::default()
+                .content(input)
+                .build()?
+                .into()
+        );
+
+        // Build chat completion request with streaming enabled
+        let request = CreateChatCompletionRequestArgs::default()
+            .model(model)
+            .messages(messages.clone())
+            .stream(true)
+            .build()?;
+
+        // Send request and process streaming response
+        print!("AI> ");
+        io::stdout().flush()?;
+
+        let mut stream = client.chat().create_stream(request).await?;
+        let mut assistant_response = String::new();
+
+        // Process each chunk as it arrives
+        while let Some(result) = stream.next().await {
+            match result {
+                Ok(response) => {
+                    for chat_choice in response.choices {
+                        if let Some(content) = chat_choice.delta.content {
+                            print!("{}", content);
+                            io::stdout().flush()?;
+                            assistant_response.push_str(&content);
+                        }
+                    }
+                }
+                Err(err) => {
+                    return Err(err.into());
+                }
+            }
+        }
+
+        // Add line break after AI response
+        println!();
+
+        // Add assistant's response to conversation history
+        messages.push(
+            ChatCompletionRequestAssistantMessageArgs::default()
+                .content(assistant_response)
+                .build()?
+                .into()
+        );
+
+        // Prevent history from growing too large
+        if messages.len() > 20 {
+            // Keep system message and the last 10 exchanges (20 messages)
+            let system_message = messages.remove(0);
+            messages = messages.split_off(messages.len().saturating_sub(19));
+            messages.insert(0, system_message);
+        }
     }
 
     Ok(())
