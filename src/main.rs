@@ -65,12 +65,22 @@ impl AppConfig {
     }
 }
 
-fn print_welcome_message(model: &str) {
+fn print_welcome_message(model: &str, word_delay_ms: u64) {
     println!("========================================");
     println!("🤖 Welcome to AI Chat RS 🤖");
     println!("========================================");
     println!("Connected to OpenAI API");
     println!("Using model: {}", model);
+    
+    // Show word display mode
+    if word_delay_ms > 0 {
+        println!("Word-by-word display: Enabled ({}ms delay)", word_delay_ms);
+        println!("Set WORD_DISPLAY_DELAY_MS=0 to disable");
+    } else {
+        println!("Word-by-word display: Disabled");
+        println!("Set WORD_DISPLAY_DELAY_MS to enable");
+    }
+    
     println!();
     println!("Type your messages and press Enter to chat.");
     println!("Type 'exit', 'quit', or press Ctrl+D to end the conversation.");
@@ -86,7 +96,7 @@ async fn main() -> Result<()> {
     let client = config.create_openai_client();
 
     // Display welcome message
-    print_welcome_message(&config.openai_model);
+    print_welcome_message(&config.openai_model, config.word_display_delay_ms);
 
     // Start interactive chat loop with the client, model name, and display delay
     chat_loop(
@@ -181,7 +191,10 @@ async fn chat_loop(
         let mut assistant_response = String::new();
 
         // Process each chunk as it arrives in a word-by-word fashion
+        // We'll track what we've displayed to avoid duplication
+        let mut displayed_text = String::new();
         let mut word_buffer = String::new();
+        let mut next_char_index = 0;
         
         while let Some(result) = stream.next().await {
             match result {
@@ -191,8 +204,14 @@ async fn chat_loop(
                             // Add to the total response
                             assistant_response.push_str(&content);
                             
-                            // Process content character by character
-                            for c in content.chars() {
+                            // Only process the new content we haven't displayed yet
+                            // This ensures we never duplicate text in the output
+                            let new_text = &assistant_response[next_char_index..];
+                            next_char_index = assistant_response.len();
+                            
+                            // Process new content character by character
+                            for c in new_text.chars() {
+                                displayed_text.push(c);
                                 word_buffer.push(c);
                                 
                                 // If we hit a space or punctuation, display the word
@@ -233,6 +252,14 @@ async fn chat_loop(
         // Print any remaining content in the buffer
         if !word_buffer.is_empty() {
             print!("{}", word_buffer);
+            io::stdout().flush()?;
+        }
+        
+        // Final verification that we've displayed everything
+        if displayed_text != assistant_response {
+            // If there's a mismatch, print the full response again to ensure completeness
+            // This should rarely happen but provides a safety net
+            print!("\n[Completing response...]\n{}", assistant_response);
             io::stdout().flush()?;
         }
 
