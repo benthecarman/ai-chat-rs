@@ -188,78 +188,90 @@ async fn chat_loop(
         io::stdout().flush()?;
 
         let mut stream = client.chat().create_stream(request).await?;
-        let mut assistant_response = String::new();
+        let mut assistant_response;
 
-        // Process each chunk as it arrives in a word-by-word fashion
-        // We'll track what we've displayed to avoid duplication
-        let mut displayed_text = String::new();
-        let mut word_buffer = String::new();
-        let mut next_char_index = 0;
+        // A completely different approach to avoid duplication:
+        // Collect the entire response first, then display it word by word
+        let mut full_response = String::new();
+        
+        // First, collect the entire response
+        print!("AI> ");
+        io::stdout().flush()?;
+        
+        // Show progress indicator if word delay is enabled (for better UX)
+        let show_progress = word_display_delay_ms > 0;
+        let mut progress_counter = 0;
+        let progress_chars = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
         
         while let Some(result) = stream.next().await {
             match result {
                 Ok(response) => {
                     for chat_choice in response.choices {
                         if let Some(content) = chat_choice.delta.content {
-                            // Add to the total response
-                            assistant_response.push_str(&content);
+                            full_response.push_str(&content);
                             
-                            // Only process the new content we haven't displayed yet
-                            // This ensures we never duplicate text in the output
-                            let new_text = &assistant_response[next_char_index..];
-                            next_char_index = assistant_response.len();
-                            
-                            // Process new content character by character
-                            for c in new_text.chars() {
-                                displayed_text.push(c);
-                                word_buffer.push(c);
-                                
-                                // If we hit a space or punctuation, display the word
-                                if c.is_whitespace() || c == '.' || c == ',' || c == '!' || c == '?' || c == ';' || c == ':' {
-                                    // Print the buffer with a small delay for a more natural feel
-                                    print!("{}", word_buffer);
+                            // Show a spinner while collecting the response
+                            if show_progress {
+                                // Update the spinner every few chunks
+                                progress_counter = (progress_counter + 1) % 3;
+                                if progress_counter == 0 {
+                                    let spinner = progress_chars[(full_response.len() / 3) % progress_chars.len()];
+                                    print!("\rAI> {} ", spinner);
                                     io::stdout().flush()?;
-                                    
-                                    // Add a configurable delay between words
-                                    if word_display_delay_ms > 0 {
-                                        thread::sleep(Duration::from_millis(word_display_delay_ms));
-                                    }
-                                    
-                                    // Clear the buffer
-                                    word_buffer.clear();
                                 }
-                            }
-                            
-                            // If we have characters left in the buffer, print them too
-                            if !word_buffer.is_empty() {
-                                print!("{}", word_buffer);
-                                io::stdout().flush()?;
                             }
                         }
                     }
                 }
                 Err(err) => {
-                    // Print any remaining buffer content before returning error
-                    if !word_buffer.is_empty() {
-                        print!("{}", word_buffer);
-                        io::stdout().flush()?;
-                    }
                     return Err(err.into());
                 }
             }
         }
         
-        // Print any remaining content in the buffer
-        if !word_buffer.is_empty() {
-            print!("{}", word_buffer);
+        // Now display the full response word by word
+        assistant_response = full_response.clone(); // Save for history
+        
+        // Clear the progress indicator if it was shown
+        if show_progress {
+            print!("\rAI> ");
             io::stdout().flush()?;
         }
         
-        // Final verification that we've displayed everything
-        if displayed_text != assistant_response {
-            // If there's a mismatch, print the full response again to ensure completeness
-            // This should rarely happen but provides a safety net
-            print!("\n[Completing response...]\n{}", assistant_response);
+        // Use a more sophisticated word splitting approach
+        let mut current_word = String::new();
+        
+        // Get the total length once to avoid repeated counting
+        let total_chars = full_response.chars().count();
+        
+        // Process the entire response character by character
+        for (i, c) in full_response.chars().enumerate() {
+            current_word.push(c);
+            
+            // Define word boundaries (space, punctuation, or end of text)
+            let is_boundary = c.is_whitespace() || 
+                              c == '.' || c == ',' || c == '!' || 
+                              c == '?' || c == ';' || c == ':' ||
+                              i == total_chars - 1;
+            
+            if is_boundary {
+                // Print the word
+                print!("{}", current_word);
+                io::stdout().flush()?;
+                
+                // Add a delay if configured
+                if word_display_delay_ms > 0 {
+                    thread::sleep(Duration::from_millis(word_display_delay_ms));
+                }
+                
+                // Reset the word buffer
+                current_word.clear();
+            }
+        }
+        
+        // In case there's anything left
+        if !current_word.is_empty() {
+            print!("{}", current_word);
             io::stdout().flush()?;
         }
 
